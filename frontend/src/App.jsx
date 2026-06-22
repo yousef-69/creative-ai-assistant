@@ -8,6 +8,13 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [generatedContent, setGeneratedContent] = useState(null)
   const [generateError, setGenerateError] = useState(null)
+  
+  // Video upload states
+  const [videoFile, setVideoFile] = useState(null)
+  const [videoPreview, setVideoPreview] = useState(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [videoData, setVideoData] = useState(null)
+  const [uploadError, setUploadError] = useState(null)
 
   const handleAnalyze = async (e) => {
     e.preventDefault()
@@ -106,6 +113,90 @@ function App() {
     return matches.length > 0 ? matches.map(m => m[0]) : null
   }
 
+  const handleVideoSelect = (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    
+    // Validate file type
+    const validTypes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska']
+    if (!validTypes.includes(file.type)) {
+      setUploadError('Please select a valid video file (MP4, MOV, AVI, MKV)')
+      return
+    }
+    
+    // Validate file size (max 100MB)
+    if (file.size > 100 * 1024 * 1024) {
+      setUploadError('Video file is too large. Maximum size is 100MB.')
+      return
+    }
+    
+    setVideoFile(file)
+    setUploadError(null)
+    
+    // Create preview URL
+    const previewUrl = URL.createObjectURL(file)
+    setVideoPreview(previewUrl)
+  }
+
+  const handleVideoUpload = async () => {
+    if (!videoFile) return
+    
+    setIsUploading(true)
+    setUploadError(null)
+    setVideoData(null)
+    
+    try {
+      // Convert video file to base64
+      const base64Data = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          // Remove the data URL prefix (e.g., "data:video/mp4;base64,")
+          const base64String = reader.result.split(',')[1]
+          resolve(base64String)
+        }
+        reader.onerror = reject
+        reader.readAsDataURL(videoFile)
+      })
+      
+      // Send as JSON with base64 encoded video
+      const response = await fetch('http://localhost:8000/upload-video', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          filename: videoFile.name,
+          video_data: base64Data,
+        }),
+      })
+      
+      if (!response.ok) {
+        throw new Error('Failed to upload video. Please try again.')
+      }
+      
+      const data = await response.json()
+      setVideoData(data)
+      
+      // Clear URL analysis results when video is uploaded
+      setResults(null)
+      setGeneratedContent(null)
+    } catch (err) {
+      setUploadError(err.message || 'Failed to upload video. Please try again.')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  const clearVideo = () => {
+    setVideoFile(null)
+    setVideoPreview(null)
+    setVideoData(null)
+    setUploadError(null)
+    if (videoPreview) {
+      URL.revokeObjectURL(videoPreview)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900">
       {/* Animated background gradient overlay */}
@@ -156,7 +247,7 @@ function App() {
               </p>
 
               {/* URL Input Form */}
-              <form onSubmit={handleAnalyze} className="max-w-3xl mx-auto mb-10">
+              <form onSubmit={handleAnalyze} className="max-w-3xl mx-auto mb-6">
                 <div className="flex flex-col sm:flex-row gap-4 p-3 bg-gray-800/70 backdrop-blur-sm rounded-2xl border border-gray-700/50 shadow-2xl">
                   <input
                     type="url"
@@ -186,6 +277,204 @@ function App() {
                   </button>
                 </div>
               </form>
+
+              {/* OR Divider */}
+              <div className="max-w-3xl mx-auto mb-6 flex items-center">
+                <div className="flex-1 border-t border-gray-600"></div>
+                <span className="px-4 text-gray-400 text-sm font-medium">OR</span>
+                <div className="flex-1 border-t border-gray-600"></div>
+              </div>
+
+              {/* Video Upload Section */}
+              <div className="max-w-3xl mx-auto mb-10">
+                {!videoFile ? (
+                  <div className="border-2 border-dashed border-gray-600 rounded-2xl p-8 text-center hover:border-purple-500 transition-colors">
+                    <svg className="w-12 h-12 mx-auto mb-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    <h3 className="text-lg font-semibold text-white mb-2">Upload a Video</h3>
+                    <p className="text-gray-400 mb-4">Get AI-powered shot list and frame analysis</p>
+                    <label className="inline-block px-6 py-3 bg-gradient-to-r from-cyan-600 to-purple-600 hover:from-cyan-700 hover:to-purple-700 text-white rounded-xl font-medium cursor-pointer transition-all duration-200">
+                      Choose Video File
+                      <input
+                        type="file"
+                        accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska"
+                        onChange={handleVideoSelect}
+                        className="hidden"
+                      />
+                    </label>
+                    <p className="text-xs text-gray-500 mt-2">MP4, MOV, AVI, MKV (Max 100MB)</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {/* Video Preview */}
+                    <div className="bg-gray-800/50 border border-gray-700/50 rounded-2xl p-4">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center space-x-3">
+                          <svg className="w-8 h-8 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
+                          <div>
+                            <p className="text-white font-medium">{videoFile.name}</p>
+                            <p className="text-sm text-gray-400">{(videoFile.size / (1024 * 1024)).toFixed(2)} MB</p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={clearVideo}
+                          className="text-gray-400 hover:text-red-400 transition-colors"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      
+                      {videoPreview && (
+                        <video
+                          src={videoPreview}
+                          controls
+                          className="w-full rounded-lg max-h-64 bg-black"
+                        />
+                      )}
+                    </div>
+
+                    {/* Upload Button */}
+                    {!videoData && (
+                      <button
+                        onClick={handleVideoUpload}
+                        disabled={isUploading}
+                        className="w-full px-8 py-4 bg-gradient-to-r from-cyan-600 to-purple-600 hover:from-cyan-700 hover:to-purple-700 text-white rounded-xl font-semibold transition-all duration-200 shadow-lg hover:shadow-cyan-500/50 disabled:opacity-50 disabled:cursor-not-allowed text-lg"
+                      >
+                        {isUploading ? (
+                          <span className="flex items-center justify-center space-x-2">
+                            <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>Analyzing Video...</span>
+                          </span>
+                        ) : (
+                          'Analyze Video & Generate Shot List'
+                        )}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Upload Error Message */}
+              {uploadError && (
+                <div className="max-w-3xl mx-auto mb-8 p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
+                  <div className="flex items-center space-x-2 text-red-400">
+                    <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    <span>{uploadError}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Video Analysis Results */}
+              {videoData && (
+                <div className="max-w-3xl mx-auto mb-8 space-y-6">
+                  {/* Success Header */}
+                  <div className="flex items-center justify-center space-x-2 text-green-400 mb-6">
+                    <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    <span className="text-lg font-semibold">Video Analysis Complete!</span>
+                  </div>
+
+                  {/* Video Metadata */}
+                  <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4">
+                    <p className="text-sm text-gray-400 mb-2">Video Information:</p>
+                    <div className="grid grid-cols-3 gap-4 text-center">
+                      <div>
+                        <p className="text-2xl font-bold text-purple-400">{videoData.duration.toFixed(1)}s</p>
+                        <p className="text-xs text-gray-400">Duration</p>
+                      </div>
+                      <div>
+                        <p className="text-2xl font-bold text-cyan-400">{videoData.size_mb} MB</p>
+                        <p className="text-xs text-gray-400">File Size</p>
+                      </div>
+                      <div>
+                        <p className="text-2xl font-bold text-pink-400">{videoData.platform}</p>
+                        <p className="text-xs text-gray-400">Platform</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Extracted Frames */}
+                  {videoData.frames && videoData.frames.length > 0 && (
+                    <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4">
+                      <p className="text-sm text-gray-400 mb-3">Extracted Key Frames:</p>
+                      <div className="grid grid-cols-5 gap-2">
+                        {videoData.frames.map((frame, index) => (
+                          <div key={index} className="relative group">
+                            <img
+                              src={`http://localhost:8000${frame}`}
+                              alt={`Frame ${index + 1}`}
+                              className="w-full h-20 object-cover rounded-lg border border-gray-600 group-hover:border-purple-500 transition-colors"
+                            />
+                            <span className="absolute top-1 left-1 bg-black/70 text-white text-xs px-1 rounded">
+                              {index + 1}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Shot List */}
+                  {videoData.shot_list && videoData.shot_list.length > 0 && (
+                    <div className="bg-gradient-to-br from-purple-500/10 to-cyan-500/10 border border-purple-500/30 rounded-xl p-6">
+                      <div className="flex items-center space-x-2 mb-4">
+                        <svg className="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                        </svg>
+                        <h3 className="text-xl font-bold text-white">Detailed Shot List</h3>
+                      </div>
+                      
+                      <div className="space-y-4">
+                        {videoData.shot_list.map((shot, index) => (
+                          <div key={index} className="bg-gray-800/50 rounded-lg p-4 border border-gray-700/50">
+                            <div className="flex items-start justify-between mb-2">
+                              <div className="flex items-center space-x-2">
+                                <span className="w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center text-white font-bold text-sm">
+                                  {shot.shot_number}
+                                </span>
+                                <div>
+                                  <h4 className="text-white font-semibold">{shot.type}</h4>
+                                  <p className="text-xs text-gray-400">{shot.timestamp}</p>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div className="space-y-2 text-sm">
+                              <div>
+                                <span className="text-purple-400 font-medium">📸 Instruction: </span>
+                                <span className="text-gray-300">{shot.instruction}</span>
+                              </div>
+                              <div>
+                                <span className="text-cyan-400 font-medium">📐 Camera: </span>
+                                <span className="text-gray-300">{shot.camera_angle}</span>
+                              </div>
+                              <div>
+                                <span className="text-pink-400 font-medium">💡 Lighting: </span>
+                                <span className="text-gray-300">{shot.lighting}</span>
+                              </div>
+                              <div>
+                                <span className="text-yellow-400 font-medium">🎬 Action: </span>
+                                <span className="text-gray-300">{shot.action}</span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Error Message */}
               {error && (

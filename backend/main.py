@@ -1,14 +1,19 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl
-from typing import Optional
+from typing import Optional, List
 import os
+import subprocess
+from pathlib import Path
 from dotenv import load_dotenv
 from ibm_watsonx_ai.foundation_models import Model
 from ibm_watsonx_ai.metanames import GenTextParamsMetaNames as GenParams
 import requests
 from bs4 import BeautifulSoup
 import json
+import uuid
+import base64
 
 # Load environment variables
 load_dotenv()
@@ -32,6 +37,12 @@ app.add_middleware(
 WATSONX_API_KEY = os.getenv("WATSONX_API_KEY")
 WATSONX_PROJECT_ID = os.getenv("WATSONX_PROJECT_ID")
 WATSONX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+
+# Create directories for uploads and frames
+UPLOAD_DIR = Path("uploads")
+FRAMES_DIR = Path("frames")
+UPLOAD_DIR.mkdir(exist_ok=True)
+FRAMES_DIR.mkdir(exist_ok=True)
 
 # Initialize watsonx.ai model
 def get_watsonx_model():
@@ -71,6 +82,10 @@ class GenerateRequest(BaseModel):
     tone: Optional[str] = "professional"
     length: Optional[int] = 500
 
+class VideoUploadRequest(BaseModel):
+    filename: str
+    video_data: str  # base64 encoded video
+
 # Response models
 class HealthResponse(BaseModel):
     status: str
@@ -86,6 +101,15 @@ class GenerateResponse(BaseModel):
     content: str
     word_count: int
     content_type: str
+
+class VideoUploadResponse(BaseModel):
+    video_id: str
+    filename: str
+    duration: float
+    size_mb: float
+    platform: str
+    frames: List[str]
+    shot_list: List[dict]
 
 def analyze_url_structure(url: str) -> dict:
     """
@@ -391,6 +415,248 @@ Generate the content now:'''
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Content generation failed: {str(e)}")
+
+def extract_video_metadata(video_path: str) -> dict:
+    """Extract video metadata using ffprobe"""
+    try:
+        cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration,size',
+            '-of', 'json',
+            video_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        data = json.loads(result.stdout)
+        
+        duration = float(data['format'].get('duration', 0))
+        size_bytes = int(data['format'].get('size', 0))
+        size_mb = size_bytes / (1024 * 1024)
+        
+        return {
+            'duration': duration,
+            'size_mb': round(size_mb, 2)
+        }
+    except Exception as e:
+        return {
+            'duration': 0.0,
+            'size_mb': 0.0
+        }
+
+def extract_frames(video_path: str, video_id: str, num_frames: int = 5) -> List[str]:
+    """Extract key frames from video using ffmpeg"""
+    try:
+        # Get video duration first
+        metadata = extract_video_metadata(video_path)
+        duration = metadata['duration']
+        
+        if duration <= 0:
+            return []
+        
+        # Calculate frame timestamps
+        interval = duration / (num_frames + 1)
+        frame_paths = []
+        
+        for i in range(1, num_frames + 1):
+            timestamp = interval * i
+            frame_filename = f"{video_id}_frame_{i}.jpg"
+            frame_path = FRAMES_DIR / frame_filename
+            
+            cmd = [
+                'ffmpeg',
+                '-ss', str(timestamp),
+                '-i', video_path,
+                '-vframes', '1',
+                '-q:v', '2',
+                '-y',
+                str(frame_path)
+            ]
+            
+            subprocess.run(cmd, capture_output=True, timeout=10)
+            
+            if frame_path.exists():
+                frame_paths.append(f"/frames/{frame_filename}")
+        
+        return frame_paths
+    except Exception as e:
+        return []
+
+def detect_platform_from_filename(filename: str) -> str:
+    """Detect platform from filename"""
+    filename_lower = filename.lower()
+    
+    if 'instagram' in filename_lower or 'ig' in filename_lower or 'reel' in filename_lower:
+        return "Instagram"
+    elif 'tiktok' in filename_lower or 'tt' in filename_lower:
+        return "TikTok"
+    elif 'youtube' in filename_lower or 'yt' in filename_lower or 'short' in filename_lower:
+        return "YouTube"
+    elif 'twitter' in filename_lower or 'tweet' in filename_lower:
+        return "Twitter"
+    else:
+        return "General"
+
+def generate_shot_list(duration: float, platform: str, num_shots: int = 5) -> List[dict]:
+    """Generate detailed shot list based on video duration and platform"""
+    
+    # Calculate shot duration
+    shot_duration = duration / num_shots
+    
+    shot_list = []
+    
+    # Platform-specific shot instructions
+    platform_styles = {
+        "Instagram": {
+            "style": "vertical 9:16 format, bright and colorful",
+            "tips": "Use trending filters, add text overlays, keep it under 60 seconds"
+        },
+        "TikTok": {
+            "style": "vertical 9:16 format, fast-paced and dynamic",
+            "tips": "Use trending sounds, add captions, hook in first 3 seconds"
+        },
+        "YouTube": {
+            "style": "horizontal 16:9 format, high quality production",
+            "tips": "Clear audio, good lighting, engaging thumbnail moment"
+        },
+        "Twitter": {
+            "style": "square 1:1 or horizontal 16:9, concise and impactful",
+            "tips": "Keep under 2 minutes, add captions, strong opening"
+        },
+        "General": {
+            "style": "flexible format, professional quality",
+            "tips": "Good lighting, clear audio, engaging content"
+        }
+    }
+    
+    style_info = platform_styles.get(platform, platform_styles["General"])
+    
+    # Generate 5 specific shots
+    shots = [
+        {
+            "shot_number": 1,
+            "timestamp": f"0:00 - {shot_duration:.1f}s",
+            "type": "Hook/Opening",
+            "instruction": f"Start with a bold visual or statement. {style_info['style']}. Capture attention immediately with movement or surprising element.",
+            "camera_angle": "Eye-level or slightly above, centered subject",
+            "lighting": "Bright, even lighting on subject's face",
+            "action": "Subject looks directly at camera, confident expression"
+        },
+        {
+            "shot_number": 2,
+            "timestamp": f"{shot_duration:.1f}s - {shot_duration*2:.1f}s",
+            "type": "Context/Setup",
+            "instruction": f"Establish the scene and topic. Show what you're talking about. {style_info['tips']}.",
+            "camera_angle": "Medium shot showing subject and environment",
+            "lighting": "Natural or soft artificial light",
+            "action": "Demonstrate or show the main subject matter"
+        },
+        {
+            "shot_number": 3,
+            "timestamp": f"{shot_duration*2:.1f}s - {shot_duration*3:.1f}s",
+            "type": "Main Content",
+            "instruction": f"Deliver the core message or demonstration. Keep energy high. Use {platform} best practices.",
+            "camera_angle": "Close-up for emphasis, or wide for action",
+            "lighting": "Consistent with previous shots",
+            "action": "Main demonstration, key points, or transformation"
+        },
+        {
+            "shot_number": 4,
+            "timestamp": f"{shot_duration*3:.1f}s - {shot_duration*4:.1f}s",
+            "type": "Value/Benefit",
+            "instruction": f"Show the result or benefit. Make it visually clear why this matters. {style_info['style']}.",
+            "camera_angle": "Focus on results or reaction",
+            "lighting": "Highlight the positive outcome",
+            "action": "Show before/after, results, or emotional reaction"
+        },
+        {
+            "shot_number": 5,
+            "timestamp": f"{shot_duration*4:.1f}s - {duration:.1f}s",
+            "type": "Call-to-Action",
+            "instruction": f"End with clear CTA. Point to follow button, ask for comments, or direct to link. {style_info['tips']}.",
+            "camera_angle": "Back to eye-level, direct address",
+            "lighting": "Bright and inviting",
+            "action": "Gesture to follow/like, smile, create urgency"
+        }
+    ]
+    
+    shot_list = shots
+    
+    return shot_list
+
+@app.post("/upload-video", response_model=VideoUploadResponse)
+async def upload_video(request: VideoUploadRequest):
+    """
+    Upload a video file (as base64 JSON) and extract frames and metadata.
+    
+    Args:
+        request: VideoUploadRequest with filename and base64 encoded video data
+        
+    Returns:
+        VideoUploadResponse with metadata, frames, and shot list
+    """
+    try:
+        # Validate file type
+        allowed_extensions = ['.mp4', '.mov', '.avi', '.mkv']
+        file_ext = Path(request.filename).suffix.lower()
+        
+        if file_ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+            )
+        
+        # Decode base64 video data
+        try:
+            video_bytes = base64.b64decode(request.video_data)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid base64 data: {str(e)}"
+            )
+        
+        # Generate unique video ID
+        video_id = str(uuid.uuid4())
+        video_filename = f"{video_id}{file_ext}"
+        video_path = UPLOAD_DIR / video_filename
+        
+        # Save decoded video file
+        with video_path.open("wb") as buffer:
+            buffer.write(video_bytes)
+        
+        # Extract metadata
+        metadata = extract_video_metadata(str(video_path))
+        
+        # Extract frames
+        frames = extract_frames(str(video_path), video_id)
+        
+        # Detect platform from filename
+        platform = detect_platform_from_filename(request.filename)
+        
+        # Generate shot list
+        shot_list = generate_shot_list(metadata['duration'], platform)
+        
+        return {
+            "video_id": video_id,
+            "filename": request.filename,
+            "duration": metadata['duration'],
+            "size_mb": metadata['size_mb'],
+            "platform": platform,
+            "frames": frames,
+            "shot_list": shot_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Video upload failed: {str(e)}")
+
+@app.get("/frames/{filename}")
+async def get_frame(filename: str):
+    """Serve extracted frame images"""
+    frame_path = FRAMES_DIR / filename
+    if not frame_path.exists():
+        raise HTTPException(status_code=404, detail="Frame not found")
+    return FileResponse(frame_path)
 
 if __name__ == "__main__":
     import uvicorn
